@@ -1,0 +1,36 @@
+ PHYSICAL MEMORY MANAGEMENT
+
+A frametable is used to manage the physical memory by dividing it into frames. To avoid having to loop through the frametable, we treat the frametable as an array, making it O(1) for lookup. The index of the frametable is the frame address shifted right by 12, as the frame size is 2^12. Before the frametable is initialised, calling alloc_kpages() will result in the function using ram_stealmem(), which is a bump pointer allocator. During initialisation, we also mark the frames used for our frametable and the kernel stuffs that are initialised before the frametable (using ram_stealmem) as used. As the frametable is shared between processes, we need to synchronise every operation on the frametable. Spinlock is chosen to make sure the process acquire the lock.
+
+In our implementation alloc_kpages only work for 1-page allocation. We keep track of the free frames by connecting all the free frames to form a circular free-list. We also keep track of the first free frame (a static global variable called first_free), so whenever alloc_kpages is called after the frametable is initialised it will return the virtual address of the first free frame in the free list (index first_free in frametable) and removes the frame from the free list. When free_kpages is called, it will reset the frame and returns it back to the free list by adding it in front of the list. Freeing a frame will also make first_free the index of the newly freed frame.
+
+ADDRESS SPACE MANAGEMENT
+
+The address space data structure contains the page table and the region descriptions. To allow dynamic number of regions, we decided to create a linked list of struct region. Each region contains the virtual base address, number of pages required, current writeable bit, original writeable bit, and a pointer to the next region in the list. The reason we need 2 variables to keep track of the write permission of a region is because during ELF loading, we need to make all regions writeable and then returns the permission to its original state after the loading is complete. Here are the functions related to address space we have to implement:
+
+as_create: Initialising a new address space for a process. Steps include allocating a new frame for this address space, creating a new root pagetable filled with null, and initialising the list of region structure.
+
+as_copy: Copy an address space of a process, used when a process is forked. First, we create a new address space with as_create, copying the regions, and deep-copying the pagetable. In this implementation, we allocate a new frame for each pagetable entry (no shared frames).
+
+as_destroy: Freeing all the memory we've allocated for this address space.
+
+as_activate: Performs TLB flush to make sure the processor only see the current process' address space.
+
+as_deactivate: Performs TLB flush to make sure the processor no longer see the current process' address space.
+
+as_define_region: Adds a new region information to the list of struct regions. In the current implementation, we only care about the writeable bit, which we will store in each of the region struct as both the current writeable bit (writeable_bit) and the original writeable bit (old_writeable_bit).
+
+as_prepare_load: Make all read-only regions read-write for loading. Only change the current writeable bit (writeable_bit).
+
+as_complete_load: Change back all the read-only regions writeable_bit to its old_writeable_bit, which is the original write permission for the region.
+
+as_define_stack: Allocate 16 pages for user stack, starting at the USERSTACKTOP. Set the initial position of the user pointer.
+
+PHYSICAL - VIRTUAL ADDRESS TRANSLATION
+
+For physical - virtual address translation, we manage a pagetable per process. In this implementation we use 2-level pagetable, which is a lazy allocator i.e we only allocate the second level pagetable when we need it. Both first and second level pagetables are arrays of size 1024. The first (root) level pagetable entry is a pointer to a second level pagetable. The entry of the second level pagetable is a physical frame address along with the valid and dirty bit. Dirty bit is turned on when a frame is writeable.
+
+Whenever a TLB miss occurs, vm_fault will lookup the pagetable for an existing entry. If no such entry exists, it will then allocate a new pagetable entry for the virtual address. The first 10-bit of the virtual address represents the root pagetable index and the next 10-bit represents the second level pagetable index. vm_fault will then switch off interrupts for a while to write the entry to the TLB for future lookup.
+
+
+
